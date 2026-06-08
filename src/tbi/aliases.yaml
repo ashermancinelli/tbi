@@ -43,3 +43,5 @@ aliases:
   delta: dandavison/delta
   rg: burntsushi/ripgrep
   ripgrep: burntsushi/ripgrep
+  nvim: neovim/neovim
+  neovim: neovim/neovim
