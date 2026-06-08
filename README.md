@@ -2,6 +2,16 @@
 
 GitHub release tarball installer.
 
+Install the launcher:
+
+```sh
+mkdir -p ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/ashermancinelli/tbi/refs/heads/main/tools/install.sh -o ~/.local/bin/tbi
+chmod +x ~/.local/bin/tbi
+```
+
+The launcher installs `uv` if needed, then runs the latest `tbi` from GitHub with `uvx`.
+
 ```sh
 pip install -e .
 tbi install getsops/sops
