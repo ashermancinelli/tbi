@@ -59,9 +59,9 @@ def make_display(log_lines: deque[str], progress: Progress) -> Panel:
     return Panel(Group(Text("\n".join(log_lines)), progress))
 
 
-def config() -> tuple[Path, Path, bool]:
+def config(prefix: str | None = None) -> tuple[Path, Path, bool]:
     cache_dir = Path(os.getenv("TBI_CACHE_DIR") or os.getenv("GAH_CACHE_DIR") or "~/.cache/tbi").expanduser()
-    install_dir = os.getenv("TBI_INSTALL_DIR") or os.getenv("GAH_INSTALL_DIR")
+    install_dir = prefix or os.getenv("TBI_INSTALL_DIR") or os.getenv("GAH_INSTALL_DIR")
     if install_dir is None:
         install_dir = "/usr/local/bin" if getattr(os, "geteuid", lambda: 1)() == 0 else "~/.local/bin"
     unattended = (
@@ -207,7 +207,7 @@ def release_urls(release: dict) -> list[str]:
 
 
 def install(args: argparse.Namespace) -> int:
-    cache_dir, install_dir, env_unattended = config()
+    cache_dir, install_dir, env_unattended = config(args.prefix)
     targets = args.targets
     installed_names = []
     errors = []
@@ -374,6 +374,7 @@ def main(argv: list[str] | None = None) -> int:
         p_install = sub.add_parser("install")
         p_install.add_argument("targets", nargs="+")
         p_install.add_argument("--tag", default="latest")
+        p_install.add_argument("--prefix")
         p_install.add_argument("--unattended", action="store_true")
         p_install.add_argument("--unattended-select-index", type=int, default=1)
         p_install.set_defaults(func=install)

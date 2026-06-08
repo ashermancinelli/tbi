@@ -7,12 +7,13 @@ pip install -e .
 tbi install getsops/sops
 tbi install gh --tag v2.63.2 --unattended
 tbi install bat lazygit zellij
+tbi install --prefix ~/.local/bin bat
 tbi aliases show
 ```
 
 Environment:
 
-- `TBI_INSTALL_DIR` defaults to `~/.local/bin`
+- `TBI_INSTALL_DIR` defaults to `~/.local/bin`; `install --prefix <bin dir>` overrides it
 - `TBI_CACHE_DIR` defaults to `~/.cache/tbi`
 - `GITHUB_PAT` authenticates GitHub API calls
 
