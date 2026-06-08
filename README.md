@@ -14,3 +14,17 @@ Environment:
 - `TBI_INSTALL_DIR` defaults to `~/.local/bin`
 - `TBI_CACHE_DIR` defaults to `~/.cache/tbi`
 - `GITHUB_PAT` authenticates GitHub API calls
+
+Aliases are YAML mappings. Later files override earlier ones:
+
+```yaml
+aliases:
+  lazygit: jesseduffield/lazygit
+```
+
+Load order:
+
+- bundled defaults
+- `~/.config/tbi/aliases.yaml`
+- `./tbi.yaml`
+- `./.tbi.yaml`

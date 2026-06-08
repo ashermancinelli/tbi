@@ -11,13 +11,13 @@ import stat
 import sys
 import tarfile
 import tempfile
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
 from collections import deque
 from io import BytesIO
+from importlib.resources import files
 from pathlib import Path
 
 from rich.console import Console, Group
@@ -35,7 +35,6 @@ from rich.text import Text
 
 from . import __version__
 
-ALIAS_DB_URL = "https://raw.githubusercontent.com/get-gah/gah-db/refs/heads/master/db.json"
 ARCHIVE_RE = r"\.zip|\.tar\.gz|\.tgz|\.tar\.xz|\.txz|\.tar\.bz2|\.tbz"
 SKIP_RE = re.compile(r"^(license|readme|changelog).*|.*\.(md|txt)$", re.I)
 LOG_LINES = 10
@@ -48,7 +47,7 @@ def die(message: str, code: int = 1) -> None:
 
 
 def make_display(log_lines: deque[str], progress: Progress) -> Panel:
-    return Panel(Group(Text("\n".join(log_lines)), progress), height=LOG_LINES + 4)
+    return Panel(Group(Text("\n".join(log_lines)), progress))
 
 
 def config() -> tuple[Path, Path, bool]:
@@ -138,13 +137,51 @@ def github_json(url: str, progress: Progress, say, label: str) -> dict:
     return data
 
 
-def aliases(progress: Progress, say, refresh: bool = False) -> dict:
-    cache_dir, _, _ = config()
-    db_path = cache_dir / "db.json"
-    stale = not db_path.exists() or time.time() - db_path.stat().st_mtime > 86400
-    if refresh or stale:
-        fetch(ALIAS_DB_URL, progress, say, "Refreshing aliases", db_path)
-    return json.loads(db_path.read_text())
+def clean_yaml_scalar(value: str) -> str:
+    value = value.strip().split("#", 1)[0].strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    return value
+
+
+def read_aliases(source) -> dict[str, str]:
+    aliases = {}
+    section = None
+    for line in source.read_text().splitlines():
+        raw = line.rstrip()
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not raw[0].isspace() and stripped.endswith(":"):
+            section = clean_yaml_scalar(stripped[:-1])
+            continue
+        if ":" not in stripped or (section not in (None, "aliases") and raw[0].isspace()):
+            continue
+        key, value = stripped.split(":", 1)
+        key = clean_yaml_scalar(key)
+        value = clean_yaml_scalar(value)
+        if key and value and key not in {"$schema", "aliases"}:
+            aliases[key] = value
+    return aliases
+
+
+def alias_sources():
+    yield files("tbi").joinpath("aliases.yaml")
+    yield Path("~/.config/tbi/aliases.yaml").expanduser()
+    yield Path.cwd() / "tbi.yaml"
+    yield Path.cwd() / ".tbi.yaml"
+
+
+def aliases(say=None, refresh: bool = False) -> dict[str, str]:
+    if refresh and say:
+        say("Aliases are loaded from YAML files")
+    merged = {}
+    for source in alias_sources():
+        if source.is_file():
+            if say:
+                say(f"Loading aliases: {source}")
+            merged.update(read_aliases(source))
+    return merged
 
 
 def release_urls(release: dict) -> list[str]:
@@ -163,6 +200,7 @@ def release_urls(release: dict) -> list[str]:
 def install(args: argparse.Namespace) -> int:
     cache_dir, install_dir, env_unattended = config()
     repo = args.target
+    installed_names = []
     log_lines = deque(maxlen=LOG_LINES)
     progress = Progress(
         SpinnerColumn(),
@@ -179,7 +217,7 @@ def install(args: argparse.Namespace) -> int:
 
         if "/" not in repo:
             say(f"Resolving alias: {repo}")
-            repo = aliases(progress, say)["aliases"].get(repo) or die(f"unknown alias: {repo}", 3)
+            repo = aliases(say).get(repo) or die(f"unknown alias: {repo}", 3)
         if not re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo):
             die(f"bad repo name: {repo}", 2)
 
@@ -270,9 +308,12 @@ def install(args: argparse.Namespace) -> int:
                 if m := re.match(rf"^{filename_pattern()}$", name, re.I):
                     name = m.group(1)
                 shutil.move(str(binary), install_dir / name)
+                installed_names.append(name)
                 say(f"Installed: {install_dir / name}")
                 progress.update(task, advance=1)
             progress.remove_task(task)
+    if installed_names:
+        console.print(f"Finished installing {', '.join(installed_names)} to {install_dir}")
     return 0
 
 
@@ -321,8 +362,10 @@ def main(argv: list[str] | None = None) -> int:
                 log_lines.append(message)
                 live.update(make_display(log_lines, progress))
 
-            data = aliases(progress, say, refresh=args.action == "refresh")
+            data = aliases(say, refresh=args.action == "refresh")
         if args.action == "show":
-            console.print_json(data=data["aliases"])
+            console.print("aliases:")
+            for alias, repo in sorted(data.items()):
+                console.print(f"  {alias}: {repo}")
         return 0
     return args.func(args)
