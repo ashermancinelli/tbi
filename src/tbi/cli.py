@@ -23,6 +23,7 @@ from pathlib import Path
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
+from rich.prompt import Prompt
 from rich.progress import (
     BarColumn,
     Progress,
@@ -39,11 +40,17 @@ ARCHIVE_RE = r"\.zip|\.tar\.gz|\.tgz|\.tar\.xz|\.txz|\.tar\.bz2|\.tbz"
 SKIP_RE = re.compile(r"^(license|readme|changelog).*|.*\.(md|txt)$", re.I)
 LOG_LINES = 10
 console = Console()
+err_console = Console(stderr=True)
+
+
+class TbiError(Exception):
+    def __init__(self, message: str, code: int = 1) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def die(message: str, code: int = 1) -> None:
-    console.print(f"[red]Error:[/red] {message}", stderr=True)
-    raise SystemExit(code)
+    raise TbiError(message, code)
 
 
 def make_display(log_lines: deque[str], progress: Progress) -> Panel:
@@ -201,7 +208,7 @@ def install(args: argparse.Namespace) -> int:
     cache_dir, install_dir, env_unattended = config()
     repo = args.target
     installed_names = []
-    log_lines = deque(maxlen=LOG_LINES)
+    log_lines = deque([f"Installing {repo}"], maxlen=LOG_LINES)
     progress = Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -236,10 +243,17 @@ def install(args: argparse.Namespace) -> int:
                     die(f"bad selection index: {args.unattended_select_index}", 22)
                 url = urls[args.unattended_select_index - 1]
             else:
+                live.stop()
                 for i, candidate in enumerate(urls, 1):
-                    say(f"{i}. {candidate}")
-                raw = console.input("Select URL: ").strip()
-                url = urls[int(raw or "1") - 1]
+                    console.print(f"{i}. {candidate}")
+                raw = Prompt.ask(
+                    "Select URL",
+                    console=console,
+                    choices=[str(i) for i in range(1, len(urls) + 1)],
+                    default="1",
+                )
+                live.start(refresh=True)
+                url = urls[int(raw) - 1]
         else:
             url = urls[0]
         say(f"Selected: {url}")
@@ -318,54 +332,58 @@ def install(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="tbi")
-    parser.add_argument("--version", action="version", version=f"tbi {__version__}")
-    sub = parser.add_subparsers(dest="command")
+    try:
+        parser = argparse.ArgumentParser(prog="tbi")
+        parser.add_argument("--version", action="version", version=f"tbi {__version__}")
+        sub = parser.add_subparsers(dest="command")
 
-    p_install = sub.add_parser("install")
-    p_install.add_argument("target")
-    p_install.add_argument("--tag", default="latest")
-    p_install.add_argument("--unattended", action="store_true")
-    p_install.add_argument("--unattended-select-index", type=int, default=1)
-    p_install.set_defaults(func=install)
+        p_install = sub.add_parser("install")
+        p_install.add_argument("target")
+        p_install.add_argument("--tag", default="latest")
+        p_install.add_argument("--unattended", action="store_true")
+        p_install.add_argument("--unattended-select-index", type=int, default=1)
+        p_install.set_defaults(func=install)
 
-    p_aliases = sub.add_parser("aliases")
-    p_aliases.add_argument("action", choices=("show", "refresh"))
+        p_aliases = sub.add_parser("aliases")
+        p_aliases.add_argument("action", choices=("show", "refresh"))
 
-    sub.add_parser("help")
-    sub.add_parser("version")
-    sub.add_parser("update")
+        sub.add_parser("help")
+        sub.add_parser("version")
+        sub.add_parser("update")
 
-    args = parser.parse_args(argv)
-    if not getattr(args, "command", None):
-        parser.print_help()
-        return 0
-    if args.command == "help":
-        parser.print_help()
-        return 0
-    if args.command == "version":
-        console.print(f"tbi {__version__}")
-        return 0
-    if args.command == "update":
-        console.print("tbi is a Python package; update it with pip or pipx.")
-        return 0
-    if args.command == "aliases":
-        log_lines = deque(maxlen=LOG_LINES)
-        progress = Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            console=console,
-        )
-        with Live(make_display(log_lines, progress), refresh_per_second=10, transient=True) as live:
-            def say(message: str) -> None:
-                log_lines.append(message)
-                live.update(make_display(log_lines, progress))
+        args = parser.parse_args(argv)
+        if not getattr(args, "command", None):
+            parser.print_help()
+            return 0
+        if args.command == "help":
+            parser.print_help()
+            return 0
+        if args.command == "version":
+            console.print(f"tbi {__version__}")
+            return 0
+        if args.command == "update":
+            console.print("tbi is a Python package; update it with pip or pipx.")
+            return 0
+        if args.command == "aliases":
+            log_lines = deque(["Loading aliases"], maxlen=LOG_LINES)
+            progress = Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                console=console,
+            )
+            with Live(make_display(log_lines, progress), refresh_per_second=10, transient=True) as live:
+                def say(message: str) -> None:
+                    log_lines.append(message)
+                    live.update(make_display(log_lines, progress))
 
-            data = aliases(say, refresh=args.action == "refresh")
-        if args.action == "show":
-            console.print("aliases:")
-            for alias, repo in sorted(data.items()):
-                console.print(f"  {alias}: {repo}")
-        return 0
-    return args.func(args)
+                data = aliases(say, refresh=args.action == "refresh")
+            if args.action == "show":
+                console.print("aliases:")
+                for alias, repo in sorted(data.items()):
+                    console.print(f"  {alias}: {repo}")
+            return 0
+        return args.func(args)
+    except TbiError as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        return exc.code

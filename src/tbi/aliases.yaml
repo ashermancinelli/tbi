@@ -1,6 +1,7 @@
 aliases:
   age: FiloSottile/age
   argocd: argoproj/argo-cd
+  bat: sharkdp/bat
   bottom: clementtsang/bottom
   croc: schollz/croc
   devbox: jetify-com/devbox
@@ -37,4 +38,5 @@ aliases:
   vagrant: hashicorp/vagrant
   yazi: sxyazi/yazi
   yq: mikefarah/yq
+  zellij: zellij-org/zellij
   zoxide: ajeetdsouza/zoxide
