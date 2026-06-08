@@ -6,6 +6,7 @@ GitHub release tarball installer.
 pip install -e .
 tbi install getsops/sops
 tbi install gh --tag v2.63.2 --unattended
+tbi install bat lazygit zellij
 tbi aliases show
 ```
 

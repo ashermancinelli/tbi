@@ -40,3 +40,6 @@ aliases:
   yq: mikefarah/yq
   zellij: zellij-org/zellij
   zoxide: ajeetdsouza/zoxide
+  delta: dandavison/delta
+  rg: burntsushi/ripgrep
+  ripgrep: burntsushi/ripgrep

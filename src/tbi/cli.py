@@ -16,9 +16,11 @@ import urllib.parse
 import urllib.request
 import zipfile
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 from importlib.resources import files
 from pathlib import Path
+from threading import Lock
 
 from rich.console import Console, Group
 from rich.live import Live
@@ -206,9 +208,11 @@ def release_urls(release: dict) -> list[str]:
 
 def install(args: argparse.Namespace) -> int:
     cache_dir, install_dir, env_unattended = config()
-    repo = args.target
+    targets = args.targets
     installed_names = []
-    log_lines = deque([f"Installing {repo}"], maxlen=LOG_LINES)
+    errors = []
+    ui_lock = Lock()
+    log_lines = deque([f"Installing {', '.join(targets)}"], maxlen=LOG_LINES)
     progress = Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -219,115 +223,145 @@ def install(args: argparse.Namespace) -> int:
     )
     with Live(make_display(log_lines, progress), refresh_per_second=10, transient=True) as live:
         def say(message: str) -> None:
-            log_lines.append(message)
-            live.update(make_display(log_lines, progress))
+            with ui_lock:
+                log_lines.append(message)
+                live.update(make_display(log_lines, progress))
 
-        if "/" not in repo:
-            say(f"Resolving alias: {repo}")
-            repo = aliases(say).get(repo) or die(f"unknown alias: {repo}", 3)
-        if not re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo):
-            die(f"bad repo name: {repo}", 2)
+        alias_map = aliases(say) if any("/" not in target for target in targets) else {}
 
-        tag_path = "latest" if args.tag == "latest" else f"tags/{args.tag}"
-        release = github_json(f"https://api.github.com/repos/{repo}/releases/{tag_path}", progress, say, f"Fetching {repo}")
-        say(f"Found release: {release.get('name') or release.get('tag_name') or 'unknown'}")
+        def install_one(target: str) -> list[str]:
+            repo = target
+            names = []
+            if "/" not in repo:
+                say(f"{target}: resolving alias")
+                repo = alias_map.get(repo) or die(f"unknown alias: {repo}", 3)
+            if not re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo):
+                die(f"bad repo name: {repo}", 2)
 
-        say("Selecting asset")
-        urls = release_urls(release)
-        if not urls:
-            die(f"no asset matched {platform.system()} {platform.machine()}", 18)
-        if len(urls) > 1:
-            say(f"Matched {len(urls)} assets")
-            if args.unattended or env_unattended:
+            tag_path = "latest" if args.tag == "latest" else f"tags/{args.tag}"
+            release = github_json(f"https://api.github.com/repos/{repo}/releases/{tag_path}", progress, say, f"{target}: fetching {repo}")
+            say(f"{target}: found release {release.get('name') or release.get('tag_name') or 'unknown'}")
+
+            say(f"{target}: selecting asset")
+            urls = release_urls(release)
+            if not urls:
+                die(f"{target}: no asset matched {platform.system()} {platform.machine()}", 18)
+            if len(urls) > 1:
+                say(f"{target}: matched {len(urls)} assets")
                 if args.unattended_select_index < 1 or args.unattended_select_index > len(urls):
                     die(f"bad selection index: {args.unattended_select_index}", 22)
-                url = urls[args.unattended_select_index - 1]
+                if args.unattended or env_unattended or len(targets) > 1:
+                    url = urls[args.unattended_select_index - 1]
+                else:
+                    with ui_lock:
+                        live.stop()
+                    try:
+                        for i, candidate in enumerate(urls, 1):
+                            console.print(f"{i}. {candidate}")
+                        raw = Prompt.ask(
+                            "Select URL",
+                            console=console,
+                            choices=[str(i) for i in range(1, len(urls) + 1)],
+                            default="1",
+                        )
+                    finally:
+                        with ui_lock:
+                            live.start(refresh=True)
+                    url = urls[int(raw) - 1]
             else:
-                live.stop()
-                for i, candidate in enumerate(urls, 1):
-                    console.print(f"{i}. {candidate}")
-                raw = Prompt.ask(
-                    "Select URL",
-                    console=console,
-                    choices=[str(i) for i in range(1, len(urls) + 1)],
-                    default="1",
-                )
-                live.start(refresh=True)
-                url = urls[int(raw) - 1]
-        else:
-            url = urls[0]
-        say(f"Selected: {url}")
+                url = urls[0]
+            say(f"{target}: selected {url}")
 
-        filename = urllib.parse.unquote(Path(urllib.parse.urlparse(url).path).name)
-        digest = next((a.get("digest") for a in release.get("assets", []) if a.get("browser_download_url") == url), None)
+            filename = urllib.parse.unquote(Path(urllib.parse.urlparse(url).path).name)
+            digest = next((a.get("digest") for a in release.get("assets", []) if a.get("browser_download_url") == url), None)
 
-        with tempfile.TemporaryDirectory(dir=cache_dir) as work:
-            workdir = Path(work)
-            download = workdir / filename
-            fetch(url, progress, say, f"Downloading {filename}", download)
+            with tempfile.TemporaryDirectory(dir=cache_dir) as work:
+                workdir = Path(work)
+                download = workdir / filename
+                fetch(url, progress, say, f"{target}: downloading {filename}", download)
 
-            if digest:
-                algo, expected = digest.split(":", 1)
-                say(f"Verifying digest: {algo}")
-                h = hashlib.new(algo)
-                task = progress.add_task(f"Verifying {algo}", total=download.stat().st_size)
-                with download.open("rb") as fh:
-                    while chunk := fh.read(1024 * 128):
-                        h.update(chunk)
-                        progress.update(task, advance=len(chunk))
-                if h.hexdigest() != expected:
-                    die(f"digest mismatch for {filename}", 17)
-                progress.remove_task(task)
-                say("Digest OK")
-            else:
-                say(f"No digest for {filename}; skipping verification")
-
-            if re.search(r"\.tar\.gz$|\.tgz$|\.tar\.xz$|\.txz$|\.tar\.bz2$|\.tbz$", filename, re.I):
-                say(f"Extracting: {filename}")
-                with tarfile.open(download) as tf:
-                    members = tf.getmembers()
-                    task = progress.add_task(f"Extracting {filename}", total=len(members))
-                    for member in members:
-                        tf.extract(member, workdir, filter="data")
-                        progress.update(task, advance=1)
+                if digest:
+                    algo, expected = digest.split(":", 1)
+                    say(f"{target}: verifying digest {algo}")
+                    h = hashlib.new(algo)
+                    task = progress.add_task(f"{target}: verifying {algo}", total=download.stat().st_size)
+                    with download.open("rb") as fh:
+                        while chunk := fh.read(1024 * 128):
+                            h.update(chunk)
+                            progress.update(task, advance=len(chunk))
+                    if h.hexdigest() != expected:
+                        die(f"{target}: digest mismatch for {filename}", 17)
                     progress.remove_task(task)
-            elif filename.lower().endswith(".zip"):
-                say(f"Extracting: {filename}")
-                root = workdir.resolve()
-                with zipfile.ZipFile(download) as zf:
-                    infos = zf.infolist()
-                    task = progress.add_task(f"Extracting {filename}", total=len(infos))
-                    for info in infos:
-                        target = (workdir / info.filename).resolve()
-                        if root != target and root not in target.parents:
-                            die(f"unsafe zip path: {info.filename}", 16)
-                        zf.extract(info, workdir)
-                        mode = info.external_attr >> 16
-                        if mode:
-                            target.chmod(mode & 0o777)
-                        progress.update(task, advance=1)
-                    progress.remove_task(task)
-            else:
-                say(f"Preparing binary: {filename}")
-                download.chmod(download.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                    say(f"{target}: digest OK")
+                else:
+                    say(f"{target}: no digest for {filename}; skipping verification")
 
-            say("Installing executables")
-            bins = [p for p in workdir.rglob("*") if p.is_file() and os.access(p, os.X_OK)]
-            task = progress.add_task("Installing", total=len(bins))
-            for binary in bins:
-                name = binary.name
-                if SKIP_RE.match(name):
+                if re.search(r"\.tar\.gz$|\.tgz$|\.tar\.xz$|\.txz$|\.tar\.bz2$|\.tbz$", filename, re.I):
+                    say(f"{target}: extracting {filename}")
+                    with tarfile.open(download) as tf:
+                        members = tf.getmembers()
+                        task = progress.add_task(f"{target}: extracting {filename}", total=len(members))
+                        for member in members:
+                            tf.extract(member, workdir, filter="data")
+                            progress.update(task, advance=1)
+                        progress.remove_task(task)
+                elif filename.lower().endswith(".zip"):
+                    say(f"{target}: extracting {filename}")
+                    root = workdir.resolve()
+                    with zipfile.ZipFile(download) as zf:
+                        infos = zf.infolist()
+                        task = progress.add_task(f"{target}: extracting {filename}", total=len(infos))
+                        for info in infos:
+                            extract_to = (workdir / info.filename).resolve()
+                            if root != extract_to and root not in extract_to.parents:
+                                die(f"{target}: unsafe zip path: {info.filename}", 16)
+                            zf.extract(info, workdir)
+                            mode = info.external_attr >> 16
+                            if mode:
+                                extract_to.chmod(mode & 0o777)
+                            progress.update(task, advance=1)
+                        progress.remove_task(task)
+                else:
+                    say(f"{target}: preparing binary {filename}")
+                    download.chmod(download.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+                say(f"{target}: installing executables")
+                bins = [p for p in workdir.rglob("*") if p.is_file() and os.access(p, os.X_OK)]
+                task = progress.add_task(f"{target}: installing", total=len(bins))
+                for binary in bins:
+                    name = binary.name
+                    if SKIP_RE.match(name):
+                        progress.update(task, advance=1)
+                        continue
+                    if m := re.match(rf"^{filename_pattern()}$", name, re.I):
+                        name = m.group(1)
+                    shutil.move(str(binary), install_dir / name)
+                    names.append(name)
+                    say(f"{target}: installed {install_dir / name}")
                     progress.update(task, advance=1)
-                    continue
-                if m := re.match(rf"^{filename_pattern()}$", name, re.I):
-                    name = m.group(1)
-                shutil.move(str(binary), install_dir / name)
-                installed_names.append(name)
-                say(f"Installed: {install_dir / name}")
-                progress.update(task, advance=1)
-            progress.remove_task(task)
+                progress.remove_task(task)
+            return names
+
+        if len(targets) == 1:
+            installed_names.extend(install_one(targets[0]))
+        else:
+            with ThreadPoolExecutor(max_workers=len(targets)) as executor:
+                futures = {executor.submit(install_one, target): target for target in targets}
+                for future in as_completed(futures):
+                    target = futures[future]
+                    try:
+                        installed_names.extend(future.result())
+                    except TbiError as exc:
+                        errors.append((target, exc))
+                        say(f"{target}: failed: {exc}")
+                    except Exception as exc:
+                        errors.append((target, TbiError(str(exc), 1)))
+                        say(f"{target}: failed: {exc}")
     if installed_names:
         console.print(f"Finished installing {', '.join(installed_names)} to {install_dir}")
+    if errors:
+        target, exc = errors[0]
+        raise TbiError(f"{target}: {exc}", exc.code)
     return 0
 
 
@@ -338,7 +372,7 @@ def main(argv: list[str] | None = None) -> int:
         sub = parser.add_subparsers(dest="command")
 
         p_install = sub.add_parser("install")
-        p_install.add_argument("target")
+        p_install.add_argument("targets", nargs="+")
         p_install.add_argument("--tag", default="latest")
         p_install.add_argument("--unattended", action="store_true")
         p_install.add_argument("--unattended-select-index", type=int, default=1)
