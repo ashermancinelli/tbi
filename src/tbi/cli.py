@@ -61,9 +61,13 @@ def make_display(log_lines: deque[str], progress: Progress) -> Panel:
 
 def config(prefix: str | None = None) -> tuple[Path, Path, bool]:
     cache_dir = Path(os.getenv("TBI_CACHE_DIR") or os.getenv("GAH_CACHE_DIR") or "~/.cache/tbi").expanduser()
-    install_dir = prefix or os.getenv("TBI_INSTALL_DIR") or os.getenv("GAH_INSTALL_DIR")
-    if install_dir is None:
-        install_dir = "/usr/local/bin" if getattr(os, "geteuid", lambda: 1)() == 0 else "~/.local/bin"
+    if prefix:
+        install_prefix = Path(prefix).expanduser()
+        install_dir = install_prefix / "bin"
+    else:
+        install_dir_env = os.getenv("TBI_INSTALL_DIR") or os.getenv("GAH_INSTALL_DIR")
+        install_dir = Path(install_dir_env or ("/usr/local/bin" if getattr(os, "geteuid", lambda: 1)() == 0 else "~/.local/bin"))
+        install_dir = install_dir.expanduser()
     unattended = (
         os.getenv("TBI_UNATTENDED") == "true"
         or os.getenv("GAH_UNATTENDED") == "true"
@@ -71,8 +75,8 @@ def config(prefix: str | None = None) -> tuple[Path, Path, bool]:
         or not sys.stdin.isatty()
     )
     cache_dir.mkdir(parents=True, exist_ok=True)
-    Path(install_dir).expanduser().mkdir(parents=True, exist_ok=True)
-    return cache_dir, Path(install_dir).expanduser(), unattended
+    install_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir, install_dir, unattended
 
 
 def filename_pattern() -> str:
