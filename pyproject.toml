@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tbi"
+version = "0.1.0"
+description = "Tarball installer for GitHub release assets"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = ["rich>=13.7"]
+
+[project.scripts]
+tbi = "tbi.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
