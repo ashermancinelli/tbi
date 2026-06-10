@@ -39,7 +39,15 @@ Aliases are YAML mappings. Later files override earlier ones:
 ```yaml
 aliases:
   lazygit: jesseduffield/lazygit
+
+install:
+  neovim/neovim:
+    bin: bin
+    lib: lib
+    share: share
 ```
+
+`install` entries map paths inside the extracted archive to paths under the install prefix. This is for packages like Neovim that ship runtime files outside `bin`.
 
 Load order:
 

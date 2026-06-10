@@ -60,7 +60,7 @@ def make_display(log_lines: deque[str], progress: Progress) -> Panel:
     return Panel(Group(Text("\n".join(log_lines)), progress))
 
 
-def config(prefix: str | None = None) -> tuple[Path, Path, bool]:
+def config(prefix: str | None = None) -> tuple[Path, Path, Path, bool]:
     cache_dir = Path(os.getenv("TBI_CACHE_DIR") or os.getenv("GAH_CACHE_DIR") or "~/.cache/tbi").expanduser()
     if prefix:
         install_prefix = Path(prefix).expanduser()
@@ -69,6 +69,7 @@ def config(prefix: str | None = None) -> tuple[Path, Path, bool]:
         install_dir_env = os.getenv("TBI_INSTALL_DIR") or os.getenv("GAH_INSTALL_DIR")
         install_dir = Path(install_dir_env or ("/usr/local/bin" if getattr(os, "geteuid", lambda: 1)() == 0 else "~/.local/bin"))
         install_dir = install_dir.expanduser()
+        install_prefix = install_dir.parent
     unattended = (
         os.getenv("TBI_UNATTENDED") == "true"
         or os.getenv("GAH_UNATTENDED") == "true"
@@ -76,8 +77,9 @@ def config(prefix: str | None = None) -> tuple[Path, Path, bool]:
         or not sys.stdin.isatty()
     )
     cache_dir.mkdir(parents=True, exist_ok=True)
+    install_prefix.mkdir(parents=True, exist_ok=True)
     install_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir, install_dir, unattended
+    return cache_dir, install_prefix, install_dir, unattended
 
 
 def filename_pattern() -> str:
@@ -159,24 +161,39 @@ def clean_yaml_scalar(value: str) -> str:
 
 
 def read_aliases(source) -> dict[str, str]:
-    aliases = {}
+    aliases, _ = read_config(source)
+    return aliases
+
+
+def read_config(source) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    aliases: dict[str, str] = {}
+    install_rules: dict[str, dict[str, str]] = {}
     section = None
+    install_key = None
     for line in source.read_text().splitlines():
         raw = line.rstrip()
         stripped = raw.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        if not raw[0].isspace() and stripped.endswith(":"):
+        indent = len(raw) - len(raw.lstrip())
+        if indent == 0 and stripped.endswith(":"):
             section = clean_yaml_scalar(stripped[:-1])
+            install_key = None
             continue
-        if ":" not in stripped or (section not in (None, "aliases") and raw[0].isspace()):
+        if ":" not in stripped:
             continue
         key, value = stripped.split(":", 1)
         key = clean_yaml_scalar(key)
         value = clean_yaml_scalar(value)
-        if key and value and key not in {"$schema", "aliases"}:
+        if section == "install":
+            if indent <= 2 and key:
+                install_key = key
+                install_rules.setdefault(install_key, {})
+            elif install_key and key and value:
+                install_rules.setdefault(install_key, {})[key] = value
+        elif section in (None, "aliases") and key and value and key not in {"$schema", "aliases"}:
             aliases[key] = value
-    return aliases
+    return aliases, install_rules
 
 
 def alias_sources():
@@ -187,15 +204,24 @@ def alias_sources():
 
 
 def aliases(say=None, refresh: bool = False) -> dict[str, str]:
+    alias_map, _ = load_config(say, refresh)
+    return alias_map
+
+
+def load_config(say=None, refresh: bool = False) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
     if refresh and say:
         say("Aliases are loaded from YAML files")
-    merged = {}
+    alias_map = {}
+    install_rules: dict[str, dict[str, str]] = {}
     for source in alias_sources():
         if source.is_file():
             if say:
                 say(f"Loading aliases: {source}")
-            merged.update(read_aliases(source))
-    return merged
+            source_aliases, source_install_rules = read_config(source)
+            alias_map.update(source_aliases)
+            for package, rules in source_install_rules.items():
+                install_rules.setdefault(package, {}).update(rules)
+    return alias_map, install_rules
 
 
 def release_urls(release: dict) -> list[str]:
@@ -215,6 +241,53 @@ def install_candidates(workdir: Path) -> list[Path]:
     executables = [p for p in workdir.rglob("*") if p.is_file() and os.access(p, os.X_OK)]
     bin_executables = [p for p in executables if "bin" in p.relative_to(workdir).parts[:-1]]
     return bin_executables or executables
+
+
+def safe_relative_path(value: str, label: str) -> Path:
+    path = Path(value)
+    if path.is_absolute() or ".." in path.parts:
+        die(f"unsafe {label} path: {value}", 16)
+    return path
+
+
+def find_install_source(workdir: Path, source: str) -> Path:
+    relative = safe_relative_path(source, "install source")
+    candidates = [workdir / relative]
+    candidates.extend(child / relative for child in workdir.iterdir() if child.is_dir())
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    die(f"install source not found in archive: {source}", 23)
+
+
+def install_mapped_paths(
+    target: str,
+    workdir: Path,
+    install_prefix: Path,
+    rules: dict[str, str],
+    say,
+) -> list[str]:
+    names = []
+    prefix = install_prefix.resolve()
+    for source, destination in rules.items():
+        src = find_install_source(workdir, source)
+        relative_destination = safe_relative_path(destination, "install destination")
+        dst = (install_prefix / relative_destination).resolve()
+        if prefix != dst and prefix not in dst.parents:
+            die(f"unsafe install destination: {destination}", 16)
+        say(f"{target}: installing {source} to {dst}")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if src.is_dir():
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+        else:
+            shutil.copy2(src, dst)
+        if relative_destination.parts and relative_destination.parts[0] == "bin":
+            installed = dst / src.name if dst.is_dir() and src.is_file() else dst
+            if installed.is_file():
+                names.append(installed.name)
+            elif src.is_dir():
+                names.extend(path.name for path in install_candidates(src))
+    return names
 
 
 class WorkDir:
@@ -243,7 +316,7 @@ class WorkDir:
 
 
 def install(args: argparse.Namespace) -> int:
-    cache_dir, install_dir, env_unattended = config(args.prefix)
+    cache_dir, install_prefix, install_dir, env_unattended = config(args.prefix)
     targets = args.targets
     installed_names = []
     errors = []
@@ -264,7 +337,7 @@ def install(args: argparse.Namespace) -> int:
                 log_lines.append(message)
                 live.update(make_display(log_lines, progress))
 
-        alias_map = aliases(say) if any("/" not in target for target in targets) else {}
+        alias_map, install_rules = load_config(say)
 
         def install_one(target: str) -> list[str]:
             repo = target
@@ -365,25 +438,29 @@ def install(args: argparse.Namespace) -> int:
                     say(f"{target}: preparing binary {filename}")
                     download.chmod(download.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
-                say(f"{target}: installing executables")
-                bins = install_candidates(workdir)
-                task = progress.add_task(f"{target}: installing", total=len(bins))
-                for binary in bins:
-                    name = binary.name
-                    if SKIP_RE.match(name):
+                package_install_rules = install_rules.get(target) or install_rules.get(repo)
+                if package_install_rules:
+                    names.extend(install_mapped_paths(target, workdir, install_prefix, package_install_rules, say))
+                else:
+                    say(f"{target}: installing executables")
+                    bins = install_candidates(workdir)
+                    task = progress.add_task(f"{target}: installing", total=len(bins))
+                    for binary in bins:
+                        name = binary.name
+                        if SKIP_RE.match(name):
+                            progress.update(task, advance=1)
+                            continue
+                        if m := re.match(rf"^{filename_pattern()}$", name, re.I):
+                            name = m.group(1)
+                        destination = install_dir / name
+                        if args.keep_temp:
+                            shutil.copy2(binary, destination)
+                        else:
+                            shutil.move(str(binary), destination)
+                        names.append(name)
+                        say(f"{target}: installed {destination}")
                         progress.update(task, advance=1)
-                        continue
-                    if m := re.match(rf"^{filename_pattern()}$", name, re.I):
-                        name = m.group(1)
-                    destination = install_dir / name
-                    if args.keep_temp:
-                        shutil.copy2(binary, destination)
-                    else:
-                        shutil.move(str(binary), destination)
-                    names.append(name)
-                    say(f"{target}: installed {destination}")
-                    progress.update(task, advance=1)
-                progress.remove_task(task)
+                    progress.remove_task(task)
             return names
 
         if len(targets) == 1:
