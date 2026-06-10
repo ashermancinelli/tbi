@@ -20,6 +20,7 @@ tbi install getsops/sops
 tbi install gh --tag v2.63.2 --unattended
 tbi install bat lazygit zellij
 tbi install --prefix ~/.local bat
+tbi install --keep-temp neovim
 tbi aliases show
 ```
 
@@ -28,6 +29,10 @@ Environment:
 - `TBI_INSTALL_DIR` defaults to `~/.local/bin`; `install --prefix <prefix>` installs binaries into `<prefix>/bin`
 - `TBI_CACHE_DIR` defaults to `~/.cache/tbi`
 - `GITHUB_PAT` authenticates GitHub API calls (needed if you get rate-limited)
+
+Flags:
+
+- `install --keep-temp` keeps the download/extract work directory under `TBI_CACHE_DIR` for inspection
 
 Aliases are YAML mappings. Later files override earlier ones:
 

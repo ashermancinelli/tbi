@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 from importlib.resources import files
 from pathlib import Path
+from types import TracebackType
 from threading import Lock
 
 from rich.console import Console, Group
@@ -216,11 +217,37 @@ def install_candidates(workdir: Path) -> list[Path]:
     return bin_executables or executables
 
 
+class WorkDir:
+    def __init__(self, parent: Path, keep: bool) -> None:
+        self.parent = parent
+        self.keep = keep
+        self._tempdir: tempfile.TemporaryDirectory[str] | None = None
+        self.path: Path | None = None
+
+    def __enter__(self) -> Path:
+        if self.keep:
+            self.path = Path(tempfile.mkdtemp(dir=self.parent))
+        else:
+            self._tempdir = tempfile.TemporaryDirectory(dir=self.parent)
+            self.path = Path(self._tempdir.__enter__())
+        return self.path
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        if self._tempdir is not None:
+            self._tempdir.__exit__(exc_type, exc, traceback)
+
+
 def install(args: argparse.Namespace) -> int:
     cache_dir, install_dir, env_unattended = config(args.prefix)
     targets = args.targets
     installed_names = []
     errors = []
+    kept_workdirs = []
     ui_lock = Lock()
     log_lines = deque([f"Installing {', '.join(targets)}"], maxlen=LOG_LINES)
     progress = Progress(
@@ -285,8 +312,11 @@ def install(args: argparse.Namespace) -> int:
             filename = urllib.parse.unquote(Path(urllib.parse.urlparse(url).path).name)
             digest = next((a.get("digest") for a in release.get("assets", []) if a.get("browser_download_url") == url), None)
 
-            with tempfile.TemporaryDirectory(dir=cache_dir) as work:
-                workdir = Path(work)
+            with WorkDir(cache_dir, args.keep_temp) as workdir:
+                if args.keep_temp:
+                    with ui_lock:
+                        kept_workdirs.append(workdir)
+                    say(f"{target}: keeping work directory {workdir}")
                 download = workdir / filename
                 fetch(url, progress, say, f"{target}: downloading {filename}", download)
 
@@ -345,9 +375,13 @@ def install(args: argparse.Namespace) -> int:
                         continue
                     if m := re.match(rf"^{filename_pattern()}$", name, re.I):
                         name = m.group(1)
-                    shutil.move(str(binary), install_dir / name)
+                    destination = install_dir / name
+                    if args.keep_temp:
+                        shutil.copy2(binary, destination)
+                    else:
+                        shutil.move(str(binary), destination)
                     names.append(name)
-                    say(f"{target}: installed {install_dir / name}")
+                    say(f"{target}: installed {destination}")
                     progress.update(task, advance=1)
                 progress.remove_task(task)
             return names
@@ -369,6 +403,10 @@ def install(args: argparse.Namespace) -> int:
                         say(f"{target}: failed: {exc}")
     if installed_names:
         console.print(f"Finished installing {', '.join(installed_names)} to {install_dir}")
+    if kept_workdirs:
+        console.print("Kept work directories:")
+        for workdir in kept_workdirs:
+            console.print(f"  {workdir}")
     if errors:
         target, exc = errors[0]
         raise TbiError(f"{target}: {exc}", exc.code)
@@ -387,6 +425,7 @@ def main(argv: list[str] | None = None) -> int:
         p_install.add_argument("--prefix")
         p_install.add_argument("--unattended", action="store_true")
         p_install.add_argument("--unattended-select-index", type=int, default=1)
+        p_install.add_argument("--keep-temp", action="store_true", help="keep download/extract work directories for inspection")
         p_install.set_defaults(func=install)
 
         p_aliases = sub.add_parser("aliases")
