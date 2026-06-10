@@ -210,6 +210,12 @@ def release_urls(release: dict) -> list[str]:
     return [m.group(1) for line in (release.get("body") or "").splitlines() if (m := md_pat.search(line.lower()))]
 
 
+def install_candidates(workdir: Path) -> list[Path]:
+    executables = [p for p in workdir.rglob("*") if p.is_file() and os.access(p, os.X_OK)]
+    bin_executables = [p for p in executables if "bin" in p.relative_to(workdir).parts[:-1]]
+    return bin_executables or executables
+
+
 def install(args: argparse.Namespace) -> int:
     cache_dir, install_dir, env_unattended = config(args.prefix)
     targets = args.targets
@@ -330,7 +336,7 @@ def install(args: argparse.Namespace) -> int:
                     download.chmod(download.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
                 say(f"{target}: installing executables")
-                bins = [p for p in workdir.rglob("*") if p.is_file() and os.access(p, os.X_OK)]
+                bins = install_candidates(workdir)
                 task = progress.add_task(f"{target}: installing", total=len(bins))
                 for binary in bins:
                     name = binary.name
