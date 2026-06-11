@@ -500,7 +500,7 @@ def main(argv: list[str] | None = None) -> int:
         p_install.add_argument("targets", nargs="+")
         p_install.add_argument("--tag", default="latest")
         p_install.add_argument("--prefix")
-        p_install.add_argument("--unattended", action="store_true")
+        p_install.add_argument("-y", "--yes", "--unattended", dest="unattended", action="store_true")
         p_install.add_argument("--unattended-select-index", type=int, default=1)
         p_install.add_argument("--keep-temp", action="store_true", help="keep download/extract work directories for inspection")
         p_install.set_defaults(func=install)
