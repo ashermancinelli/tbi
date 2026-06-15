@@ -45,8 +45,11 @@ aliases:
   ripgrep: burntsushi/ripgrep
   nvim: neovim/neovim
   neovim: neovim/neovim
+  render: render-oss/cli
 
 install:
+  render:
+    cli*: bin/render
   neovim/neovim:
     bin: bin
     lib: lib

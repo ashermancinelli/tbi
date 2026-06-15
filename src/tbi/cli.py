@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import stat
 import sys
@@ -250,13 +252,33 @@ def safe_relative_path(value: str, label: str) -> Path:
     return path
 
 
-def find_install_source(workdir: Path, source: str) -> Path:
+def has_glob_chars(pattern: str) -> bool:
+    return any(c in pattern for c in "*?[")
+
+
+ARCHIVE_FILE_RE = re.compile(r"\.(zip|tar\.gz|tgz|tar\.xz|txz|tar\.bz2|tbz)$", re.I)
+
+
+def find_install_sources(workdir: Path, source: str) -> list[Path]:
+    if has_glob_chars(source):
+        matches = []
+        for d in [workdir] + [c for c in workdir.iterdir() if c.is_dir()]:
+            for entry in d.iterdir():
+                if not entry.is_file():
+                    continue
+                if ARCHIVE_FILE_RE.search(entry.name) or SKIP_RE.match(entry.name):
+                    continue
+                if fnmatch.fnmatchcase(entry.name, source):
+                    matches.append(entry)
+        if matches:
+            return matches
+        die(f"install source not found in archive: {source}", 23)
     relative = safe_relative_path(source, "install source")
     candidates = [workdir / relative]
     candidates.extend(child / relative for child in workdir.iterdir() if child.is_dir())
     for candidate in candidates:
         if candidate.exists():
-            return candidate
+            return [candidate]
     die(f"install source not found in archive: {source}", 23)
 
 
@@ -270,23 +292,24 @@ def install_mapped_paths(
     names = []
     prefix = install_prefix.resolve()
     for source, destination in rules.items():
-        src = find_install_source(workdir, source)
-        relative_destination = safe_relative_path(destination, "install destination")
-        dst = (install_prefix / relative_destination).resolve()
-        if prefix != dst and prefix not in dst.parents:
-            die(f"unsafe install destination: {destination}", 16)
-        say(f"{target}: installing {source} to {dst}")
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        if src.is_dir():
-            shutil.copytree(src, dst, dirs_exist_ok=True)
-        else:
-            shutil.copy2(src, dst)
-        if relative_destination.parts and relative_destination.parts[0] == "bin":
-            installed = dst / src.name if dst.is_dir() and src.is_file() else dst
-            if installed.is_file():
-                names.append(installed.name)
-            elif src.is_dir():
-                names.extend(path.name for path in install_candidates(src))
+        sources = find_install_sources(workdir, source)
+        for src in sources:
+            relative_destination = safe_relative_path(destination, "install destination")
+            dst = (install_prefix / relative_destination).resolve()
+            if prefix != dst and prefix not in dst.parents:
+                die(f"unsafe install destination: {destination}", 16)
+            say(f"{target}: installing {src.name} to {dst}")
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if src.is_dir():
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+            else:
+                shutil.copy2(src, dst)
+            if relative_destination.parts and relative_destination.parts[0] == "bin":
+                installed = dst / src.name if dst.is_dir() and src.is_file() else dst
+                if installed.is_file():
+                    names.append(installed.name)
+                elif src.is_dir():
+                    names.extend(path.name for path in install_candidates(src))
     return names
 
 
