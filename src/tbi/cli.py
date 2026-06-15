@@ -271,6 +271,7 @@ def find_install_sources(workdir: Path, source: str) -> list[Path]:
                 if fnmatch.fnmatchcase(entry.name, source):
                     matches.append(entry)
         if matches:
+            matches.sort(key=lambda p: p.name)
             return matches
         die(f"install source not found in archive: {source}", 23)
     relative = safe_relative_path(source, "install source")

@@ -19,3 +19,6 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 tbi = ["aliases.yaml"]
+
+[tool.pytest.ini_options]
+markers = ["integration: tests that require GITHUB_PAT and network access"]
