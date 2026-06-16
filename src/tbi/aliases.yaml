@@ -1,6 +1,8 @@
 aliases:
   age: FiloSottile/age
   argocd: argoproj/argo-cd
+  ast-grep: ast-grep/ast-grep
+  sg: ast-grep/ast-grep
   bat: sharkdp/bat
   bottom: clementtsang/bottom
   croc: schollz/croc
